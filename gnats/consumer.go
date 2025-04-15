@@ -22,8 +22,8 @@ type ConsumerConfig func(*Consumer) error
 
 type Consumer struct {
 	name           string
-	subject        string // Replaces queueName, used as the JetStream subject
-	consumerName   string // Durable consumer name for JetStream
+	subject        string
+	consumerName   string
 	delivery       *nats.Subscription
 	logger         *slog.Logger
 	handlers       map[string]HandlerFunc
@@ -54,22 +54,18 @@ func WithHandlers(handlers map[string]HandlerFunc) ConsumerConfig {
 func WithOtelMetric(meter metric.Meter) ConsumerConfig {
 	return func(c *Consumer) error {
 		var err error
-
 		c.consumeCounter, err = meter.Int64Counter(fmt.Sprintf("%s.consume.total.counter", c.name))
 		if err != nil {
 			return err
 		}
-
 		c.successCounter, err = meter.Int64Counter(fmt.Sprintf("%s.consume.success.counter", c.name))
 		if err != nil {
 			return err
 		}
-
 		c.failCounter, err = meter.Int64Counter(fmt.Sprintf("%s.consume.failed.counter", c.name))
 		if err != nil {
 			return err
 		}
-
 		return nil
 	}
 }
@@ -94,8 +90,9 @@ func (c Carrier) Get(key string) string {
 func (c Carrier) Set(key, value string) {
 	c[key] = []string{value}
 }
+
 func (c Carrier) Keys() []string {
-	keys := make([]string, 0)
+	keys := make([]string, 0, len(c))
 	for key := range c {
 		keys = append(keys, key)
 	}
@@ -115,15 +112,14 @@ func NewConsumer(
 		subject:      subject,
 		consumerName: consumerName,
 		logger:       l.With("layer", "Consumer"),
-		handlers:     map[string]HandlerFunc{},
+		handlers:     make(map[string]HandlerFunc),
 		queueLength:  queueLength,
 		workersCount: workersCount,
 		msgsQueue:    make(chan *nats.Msg, queueLength),
 	}
 
 	for _, cfg := range configs {
-		err := cfg(ec)
-		if err != nil {
+		if err := cfg(ec); err != nil {
 			return nil, err
 		}
 	}
@@ -139,28 +135,33 @@ func (c *Consumer) RunInnerWorkers() {
 
 func (c *Consumer) Setup(conn *nats.Conn, js nats.JetStreamContext) error {
 	c.js = js
+	c.logger.Info("setting up consumer", "subject", c.subject, "consumerName", c.consumerName)
 
 	// Create or update a durable consumer
 	_, err := js.AddConsumer(c.subject, &nats.ConsumerConfig{
-		Durable:        c.consumerName,
-		DeliverSubject: c.subject,
-		AckPolicy:      nats.AckExplicitPolicy,
+		Durable:   c.consumerName,
+		AckPolicy: nats.AckExplicitPolicy,
 	})
 	if err != nil && !errors.Is(err, nats.ErrConsumerNameAlreadyInUse) {
+		c.logger.Error("failed to create consumer", "err", err)
 		return err
 	}
+	c.logger.Info("consumer created or exists", "consumerName", c.consumerName)
 
 	// Subscribe using JetStream push-based consumer
 	sub, err := js.Subscribe(c.subject, func(msg *nats.Msg) {
+		c.logger.Debug("message received", "subject", msg.Subject)
 		c.msgsQueue <- msg
-	}, nats.Durable(c.consumerName), nats.ManualAck())
+	}, nats.Durable(c.consumerName), nats.ManualAck(), nats.AckWait(30*time.Second))
 	if err != nil {
+		c.logger.Error("failed to subscribe", "err", err)
 		return err
 	}
 	c.delivery = sub
+	c.logger.Info("subscribed to subject", "subject", c.subject)
 
 	if c.tracer == nil {
-		c.tracer = otel.Tracer("gnats/consumer")
+		c.tracer = otel.Tracer("nats/consumer")
 	}
 	return nil
 }
@@ -170,15 +171,13 @@ func (c *Consumer) RegisterHandler(routingKey string, handler HandlerFunc) {
 }
 
 func (c *Consumer) Worker() {
-	lg := c.logger.With("method", "Worker")
-	lg.Info("started Consumer worker")
-	// Worker is handled by the subscription callback in Setup
-	select {}
+	c.logger.Info("started consumer worker", "name", c.name)
+	select {} // Worker is driven by subscription callback
 }
 
 func (c *Consumer) innerWorker() {
 	lg := c.logger.With("method", "InnerWorker")
-	lg.Info("started Consumer inner worker")
+	lg.Info("started consumer inner worker")
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -187,11 +186,11 @@ func (c *Consumer) innerWorker() {
 	}()
 	propagator := otel.GetTextMapPropagator()
 	for msg := range c.msgsQueue {
+		lg.Debug("processing message from queue", "subject", msg.Subject)
 		func() {
-			routingKey := msg.Subject // Use subject as routingKey equivalent
-			lg.Info("gnats message received in msg queue go channel", slog.String("subject", routingKey))
+			routingKey := msg.Subject
+			lg.Info("nats message received", "subject", routingKey)
 
-			// Extract the context from the message headers
 			ctx := context.Background()
 			eCtx := propagator.Extract(ctx, Carrier(msg.Header))
 			spanCtx := trace.SpanContextFromContext(eCtx)
@@ -212,15 +211,15 @@ func (c *Consumer) innerWorker() {
 			}
 			handler, ok := c.handlers[routingKey]
 			if !ok {
-				lg.Warn("no handler found for subject", slog.String("subject", routingKey))
+				lg.Warn("no handler found for subject", "subject", routingKey)
 				if c.failCounter != nil {
 					c.failCounter.Add(ctx, 1)
 				}
 				if err := msg.Ack(); err != nil {
-					lg.Error("failed to ack message", slog.Any("error", err))
+					lg.Error("failed to ack message", "error", err)
 					recordTraceError(err, span)
 				}
-				lg.Info("gnats message acked (no handler found)", slog.String("subject", routingKey))
+				lg.Info("nats message acked (no handler found)", "subject", routingKey)
 				return
 			}
 
@@ -229,19 +228,19 @@ func (c *Consumer) innerWorker() {
 					c.successCounter.Add(ctx, 1)
 				}
 				if err := msg.Ack(); err != nil {
-					lg.Error("failed to ack message", slog.Any("error", err))
+					lg.Error("failed to ack message", "error", err)
 					recordTraceError(err, span)
 				}
-				lg.Info("gnats message acked", slog.String("subject", routingKey))
+				lg.Info("nats message acked", "subject", routingKey)
 			} else {
 				if c.failCounter != nil {
 					c.failCounter.Add(ctx, 1)
 				}
 				if err := msg.Nak(); err != nil {
-					lg.Error("failed to nack message", slog.Any("error", err))
+					lg.Error("failed to nack message", "error", err)
 					recordTraceError(err, span)
 				}
-				lg.Warn("gnats message nacked", slog.String("subject", routingKey))
+				lg.Warn("nats message nacked", "subject", routingKey)
 			}
 		}()
 	}

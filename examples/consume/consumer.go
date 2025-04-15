@@ -3,11 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"github.com/esfandiyar-stream/nats/gnats"
-	"log/slog"
 	"os"
+	"time"
 
+	"github.com/esfandiyar-stream/nats/gnats"
 	"go.opentelemetry.io/otel"
+	"log/slog"
 )
 
 type Order struct {
@@ -27,6 +28,16 @@ func main() {
 
 	// Initialize NATS with JetStream
 	natsBroker := gnats.NewNATS("nats://localhost:4222", "orders", logger)
+	logger.Info("initializing consumer", "stream", "orders", "subject", "orders.created")
+
+	// Wait for JetStream to be ready
+	for {
+		if err := natsBroker.HealthCheck(); err == nil {
+			break
+		}
+		logger.Info("waiting for nats connection")
+		time.Sleep(1 * time.Second)
+	}
 
 	// Create a consumer
 	consumer, err := gnats.NewConsumer(
@@ -59,6 +70,7 @@ func main() {
 		logger.Error("failed to setup nats", "error", err)
 		os.Exit(1)
 	}
+	logger.Info("consumer setup complete", "consumerName", "order-consumer")
 
 	// Keep the program running
 	select {}

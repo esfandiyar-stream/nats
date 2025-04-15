@@ -3,10 +3,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/esfandiyar-stream/nats/gnats"
 	"log/slog"
 	"os"
 	"time"
+
+	"github.com/esfandiyar-stream/nats/gnats"
 )
 
 type Order struct {

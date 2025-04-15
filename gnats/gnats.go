@@ -121,20 +121,27 @@ func (n *NATS) Connect() error {
 func (n *NATS) SetupJetStream() error {
 	js, err := n.conn.JetStream()
 	if err != nil {
+		n.lg.Error("failed to initialize jetstream", "err", err)
 		return err
 	}
 	n.js = js
 
 	// Ensure the stream exists
+	n.lg.Info("creating stream", "name", n.streamName)
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     n.streamName,
-		Subjects: []string{n.streamName + ".>"}, // All subjects under streamName
-		Storage:  nats.FileStorage,              // Persistent storage
+		Subjects: []string{n.streamName + ".>"}, // e.g., "orders.>"
+		Storage:  nats.FileStorage,
 	})
-	if err != nil && !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
+	if err != nil {
+		n.lg.Error("failed to create stream", "name", n.streamName, "err", err)
+		if errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
+			n.lg.Info("stream already exists", "name", n.streamName)
+			return nil
+		}
 		return err
 	}
-
+	n.lg.Info("stream created successfully", "name", n.streamName)
 	return nil
 }
 
@@ -183,7 +190,6 @@ func (n *NATS) HealthCheck() error {
 	return nil
 }
 
-// JetStream returns the JetStream context for publishing or subscribing.
 func (n *NATS) JetStream() nats.JetStreamContext {
 	n.Mutex.RLock()
 	defer n.Mutex.RUnlock()
