@@ -1,8 +1,7 @@
-package nats
+package gnats
 
 import (
 	"errors"
-	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -85,8 +84,10 @@ func (n *NATS) Setup(consumerRunner *ConsumerRunner) error {
 		return err
 	}
 
-	if err := consumerRunner.Setup(n.conn, n.js); err != nil {
-		return err
+	if consumerRunner != nil {
+		if err := consumerRunner.Setup(n.conn, n.js); err != nil {
+			return err
+		}
 	}
 
 	n.connected = true
@@ -127,8 +128,8 @@ func (n *NATS) SetupJetStream() error {
 	// Ensure the stream exists
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     n.streamName,
-		Subjects: []string{fmt.Sprintf("%s.>", n.streamName)}, // All subjects under streamName
-		Storage:  nats.FileStorage,                            // Persistent storage
+		Subjects: []string{n.streamName + ".>"}, // All subjects under streamName
+		Storage:  nats.FileStorage,              // Persistent storage
 	})
 	if err != nil && !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 		return err
@@ -180,4 +181,11 @@ func (n *NATS) HealthCheck() error {
 	}
 
 	return nil
+}
+
+// JetStream returns the JetStream context for publishing or subscribing.
+func (n *NATS) JetStream() nats.JetStreamContext {
+	n.Mutex.RLock()
+	defer n.Mutex.RUnlock()
+	return n.js
 }

@@ -1,4 +1,4 @@
-package nats
+package gnats
 
 import (
 	"context"
@@ -160,7 +160,7 @@ func (c *Consumer) Setup(conn *nats.Conn, js nats.JetStreamContext) error {
 	c.delivery = sub
 
 	if c.tracer == nil {
-		c.tracer = otel.Tracer("nats/consumer")
+		c.tracer = otel.Tracer("gnats/consumer")
 	}
 	return nil
 }
@@ -189,7 +189,7 @@ func (c *Consumer) innerWorker() {
 	for msg := range c.msgsQueue {
 		func() {
 			routingKey := msg.Subject // Use subject as routingKey equivalent
-			lg.Info("nats message received in msg queue go channel", slog.String("subject", routingKey))
+			lg.Info("gnats message received in msg queue go channel", slog.String("subject", routingKey))
 
 			// Extract the context from the message headers
 			ctx := context.Background()
@@ -220,7 +220,7 @@ func (c *Consumer) innerWorker() {
 					lg.Error("failed to ack message", slog.Any("error", err))
 					recordTraceError(err, span)
 				}
-				lg.Info("nats message acked (no handler found)", slog.String("subject", routingKey))
+				lg.Info("gnats message acked (no handler found)", slog.String("subject", routingKey))
 				return
 			}
 
@@ -232,7 +232,7 @@ func (c *Consumer) innerWorker() {
 					lg.Error("failed to ack message", slog.Any("error", err))
 					recordTraceError(err, span)
 				}
-				lg.Info("nats message acked", slog.String("subject", routingKey))
+				lg.Info("gnats message acked", slog.String("subject", routingKey))
 			} else {
 				if c.failCounter != nil {
 					c.failCounter.Add(ctx, 1)
@@ -241,7 +241,7 @@ func (c *Consumer) innerWorker() {
 					lg.Error("failed to nack message", slog.Any("error", err))
 					recordTraceError(err, span)
 				}
-				lg.Warn("nats message nacked", slog.String("subject", routingKey))
+				lg.Warn("gnats message nacked", slog.String("subject", routingKey))
 			}
 		}()
 	}
