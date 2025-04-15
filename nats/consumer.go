@@ -94,9 +94,8 @@ func (c Carrier) Get(key string) string {
 func (c Carrier) Set(key, value string) {
 	c[key] = []string{value}
 }
-
 func (c Carrier) Keys() []string {
-	keys := []string{}
+	keys := make([]string, 0)
 	for key := range c {
 		keys = append(keys, key)
 	}
